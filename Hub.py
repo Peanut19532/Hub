@@ -556,11 +556,12 @@ class GameHub:
             self._dash_after_ids.append(aid)
         tick()
 
-        # ── top row: weather + system stats (col 0) + news (col 1) ──
+        # ── top row: weather + system stats (col 0) + news (col 1) + quote/fact (col 2) ──
         top_row = Frame(self.root, bg=BG_DARK)
         top_row.pack(fill="x", padx=40, pady=(10, 0))
         top_row.columnconfigure(0, weight=1)
         top_row.columnconfigure(1, weight=2)
+        top_row.columnconfigure(2, weight=2)
         top_row.rowconfigure(0, weight=1)
         top_row.rowconfigure(1, weight=1)
 
@@ -745,37 +746,31 @@ class GameHub:
             self._dash_after_ids.append(aid)
         schedule_news()
 
-        # ── QUOTE & FACT ROW ─────────────────────────────────
-        qf_row = Frame(self.root, bg=BG_DARK)
-        qf_row.pack(fill="x", padx=40, pady=(10, 0))
-        qf_row.columnconfigure(0, weight=1)
-        qf_row.columnconfigure(1, weight=1)
-
-        # Quote card
-        q_card = Frame(qf_row, bg=BG_CARD,
+        # ── QUOTE card (col 2, row 0) ─────────────────────────
+        q_card = Frame(top_row, bg=BG_CARD,
                        highlightbackground=ACCENT_TEAL, highlightthickness=2,
                        padx=20, pady=14)
-        q_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        q_card.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         Label(q_card, text="💬  QUOTE OF THE DAY", font=("Courier New", 13, "bold"),
               bg=BG_CARD, fg=TEXT_DIM).pack(anchor="w")
         self.divider(q_card, ACCENT_TEAL).pack(fill="x", pady=(4, 10))
         quote_lbl = Label(q_card, text="Loading…", font=("Courier New", 13, "italic"),
-                          bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=480, justify="left")
+                          bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=380, justify="left")
         quote_lbl.pack(anchor="w", fill="x")
         author_lbl = Label(q_card, text="", font=("Courier New", 11, "bold"),
                            bg=BG_CARD, fg=ACCENT_TEAL)
         author_lbl.pack(anchor="e", pady=(8, 0))
 
-        # Fact card
-        f_card = Frame(qf_row, bg=BG_CARD,
+        # ── FACT card (col 2, row 1) ──────────────────────────
+        f_card = Frame(top_row, bg=BG_CARD,
                        highlightbackground=ACCENT_PURPLE, highlightthickness=2,
                        padx=20, pady=14)
-        f_card.grid(row=0, column=1, sticky="nsew")
+        f_card.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
         Label(f_card, text="💡  FACT OF THE DAY", font=("Courier New", 13, "bold"),
               bg=BG_CARD, fg=TEXT_DIM).pack(anchor="w")
         self.divider(f_card, ACCENT_PURPLE).pack(fill="x", pady=(4, 10))
         fact_lbl = Label(f_card, text="Loading…", font=("Courier New", 13),
-                         bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=480, justify="left")
+                         bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=380, justify="left")
         fact_lbl.pack(anchor="w", fill="x")
         fact_src_lbl = Label(f_card, text="", font=("Courier New", 10),
                              bg=BG_CARD, fg=TEXT_DIM)
