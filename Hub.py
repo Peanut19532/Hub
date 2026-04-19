@@ -34,6 +34,7 @@ FONT_BTN_LG    = ("Courier New", 18, "bold")
 
 SCORES_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_hub_scores.json")
 SETTINGS_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_settings.json")
+DAILY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_cache.json")
 
 # ============ SNAKE CONSTANTS ============
 GAME_WIDTH   = 600
@@ -247,6 +248,21 @@ class GameHub:
     def _save_settings(self):
         with open(SETTINGS_FILE, "w") as f:
             json.dump(self.settings, f)
+
+    def _load_daily_cache(self):
+        try:
+            with open(DAILY_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            if data.get("date") == str(datetime.date.today()):
+                return data
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        return {}
+
+    def _save_daily_cache(self, data):
+        data["date"] = str(datetime.date.today())
+        with open(DAILY_CACHE_FILE, "w") as f:
+            json.dump(data, f)
 
     def _save_scores(self):
         with open(SCORES_FILE, "w") as f:
@@ -728,6 +744,94 @@ class GameHub:
             aid = self.root.after(900_000, schedule_news)
             self._dash_after_ids.append(aid)
         schedule_news()
+
+        # ── QUOTE & FACT ROW ─────────────────────────────────
+        qf_row = Frame(self.root, bg=BG_DARK)
+        qf_row.pack(fill="x", padx=40, pady=(10, 0))
+        qf_row.columnconfigure(0, weight=1)
+        qf_row.columnconfigure(1, weight=1)
+
+        # Quote card
+        q_card = Frame(qf_row, bg=BG_CARD,
+                       highlightbackground=ACCENT_TEAL, highlightthickness=2,
+                       padx=20, pady=14)
+        q_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        Label(q_card, text="💬  QUOTE OF THE DAY", font=("Courier New", 13, "bold"),
+              bg=BG_CARD, fg=TEXT_DIM).pack(anchor="w")
+        self.divider(q_card, ACCENT_TEAL).pack(fill="x", pady=(4, 10))
+        quote_lbl = Label(q_card, text="Loading…", font=("Courier New", 13, "italic"),
+                          bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=480, justify="left")
+        quote_lbl.pack(anchor="w", fill="x")
+        author_lbl = Label(q_card, text="", font=("Courier New", 11, "bold"),
+                           bg=BG_CARD, fg=ACCENT_TEAL)
+        author_lbl.pack(anchor="e", pady=(8, 0))
+
+        # Fact card
+        f_card = Frame(qf_row, bg=BG_CARD,
+                       highlightbackground=ACCENT_PURPLE, highlightthickness=2,
+                       padx=20, pady=14)
+        f_card.grid(row=0, column=1, sticky="nsew")
+        Label(f_card, text="💡  FACT OF THE DAY", font=("Courier New", 13, "bold"),
+              bg=BG_CARD, fg=TEXT_DIM).pack(anchor="w")
+        self.divider(f_card, ACCENT_PURPLE).pack(fill="x", pady=(4, 10))
+        fact_lbl = Label(f_card, text="Loading…", font=("Courier New", 13),
+                         bg=BG_CARD, fg=TEXT_PRIMARY, wraplength=480, justify="left")
+        fact_lbl.pack(anchor="w", fill="x")
+        fact_src_lbl = Label(f_card, text="", font=("Courier New", 10),
+                             bg=BG_CARD, fg=TEXT_DIM)
+        fact_src_lbl.pack(anchor="e", pady=(8, 0))
+
+        def fetch_quote_fact():
+            if not REQUESTS_OK:
+                self.root.after(0, lambda: quote_lbl.config(
+                    text="Install 'requests' to enable this card.", fg=ACCENT_PINK))
+                self.root.after(0, lambda: fact_lbl.config(
+                    text="Install 'requests' to enable this card.", fg=ACCENT_PINK))
+                return
+            cache = self._load_daily_cache()
+
+            if "quote" in cache:
+                q_text   = cache["quote"]
+                q_author = cache.get("author", "")
+            else:
+                try:
+                    data     = requests.get(
+                        "https://zenquotes.io/api/today", timeout=6).json()
+                    q_text   = data[0]["q"]
+                    q_author = data[0]["a"]
+                    cache["quote"]  = q_text
+                    cache["author"] = q_author
+                    self._save_daily_cache(cache)
+                except Exception:
+                    q_text   = "Could not load quote."
+                    q_author = ""
+
+            if "fact" in cache:
+                f_text = cache["fact"]
+                f_src  = cache.get("fact_src", "")
+            else:
+                try:
+                    data   = requests.get(
+                        "https://uselessfacts.jsph.pl/api/v2/facts/today",
+                        timeout=6).json()
+                    f_text = data["text"]
+                    f_src  = data.get("source", "")
+                    cache["fact"]     = f_text
+                    cache["fact_src"] = f_src
+                    self._save_daily_cache(cache)
+                except Exception:
+                    f_text = "Could not load fact."
+                    f_src  = ""
+
+            def apply():
+                quote_lbl.config(text=f'"{q_text}"')
+                author_lbl.config(
+                    text=f"— {q_author}" if q_author else "")
+                fact_lbl.config(text=f_text)
+                fact_src_lbl.config(text=f_src)
+            self.root.after(0, apply)
+
+        threading.Thread(target=fetch_quote_fact, daemon=True).start()
 
         # ── YEAR CALENDAR ────────────────────────────────────
         today = datetime.date.today()
