@@ -161,12 +161,21 @@ class GameHub:
         self.root.state("zoomed")
         self.root.configure(bg=BG_DARK)
         self.snake_state = {}
-        self.high_scores = self._load_scores()
+        self.current_user = ""
+        self.high_scores = {}
+        self._all_scores = self._load_scores()
         self._load_settings()
         self.show_login()
 
     # ─── UTILS ────────────────────────────────────────────────
     def clear(self):
+        self._dash_active = False
+        for aid in getattr(self, '_dash_after_ids', []):
+            try:
+                self.root.after_cancel(aid)
+            except Exception:
+                pass
+        self._dash_after_ids = []
         for w in self.root.winfo_children():
             w.destroy()
         # Unbind generic keys that games may have set
@@ -214,16 +223,29 @@ class GameHub:
         self.divider(self.root, color).pack(fill="x", padx=40)
 
     # ─── HIGH SCORES ──────────────────────────────────────────
+    _KNOWN_GAMES = {"snake", "number_guess", "wordle", "hangman", "rps", "tictactoe", "connect4"}
+
     def _load_scores(self):
+        """Load all scores. Returns dict keyed by username."""
         try:
             with open(SCORES_FILE, "r") as f:
                 data = json.load(f)
-            # Migrate old format (list of ints) to list of dicts
-            for game in data:
-                data[game] = [
-                    e if isinstance(e, dict) else {"score": e, "name": ""}
-                    for e in data[game]
-                ]
+            # Migrate old flat format (game names at top level) to per-user
+            if any(k in self._KNOWN_GAMES for k in data):
+                migrated = {}
+                for game, entries in data.items():
+                    migrated[game] = [
+                        e if isinstance(e, dict) else {"score": e, "name": ""}
+                        for e in entries
+                    ]
+                return {"HARRY": migrated}
+            # New per-user format — migrate any list-of-int entries
+            for user in data:
+                for game in data[user]:
+                    data[user][game] = [
+                        e if isinstance(e, dict) else {"score": e, "name": ""}
+                        for e in data[user][game]
+                    ]
             return data
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
@@ -235,6 +257,7 @@ class GameHub:
             "password":     "0211",
             "snake_speed":  100,
             "accent_colour": "#00e5ff",
+            "users": {"HARRY": "0211", "ERIN": "1023"},
         }
         try:
             with open(SETTINGS_FILE, "r") as f:
@@ -242,6 +265,15 @@ class GameHub:
             self.settings = {**defaults, **data}
         except (FileNotFoundError, json.JSONDecodeError):
             self.settings = defaults
+        # Migrate old single-user format to users dict
+        if "users" not in self.settings:
+            self.settings["users"] = {
+                self.settings["display_name"].upper(): self.settings["password"]
+            }
+        # Ensure Erin exists
+        if "ERIN" not in self.settings["users"]:
+            self.settings["users"]["ERIN"] = "1023"
+        self._save_settings()
         self.snake_speed = self.settings["snake_speed"]
         ACCENT_CYAN = self.settings["accent_colour"]
 
@@ -265,8 +297,9 @@ class GameHub:
             json.dump(data, f)
 
     def _save_scores(self):
+        self._all_scores[self.current_user] = self.high_scores
         with open(SCORES_FILE, "w") as f:
-            json.dump(self.high_scores, f)
+            json.dump(self._all_scores, f)
 
     def _check_rank(self, game, score):
         """Return what rank this score would achieve (1-based), or None if outside top 5."""
@@ -466,7 +499,7 @@ class GameHub:
         wrapper = Frame(self.root, bg=BG_DARK)
         wrapper.place(relx=0.5, rely=0.5, anchor="center")
 
-        Label(wrapper, text=f"◈  {self.settings['display_name'].upper()}'S HUB  ◈",
+        Label(wrapper, text="◈  THE HUB  ◈",
               font=FONT_TITLE, bg=BG_DARK, fg=ACCENT_CYAN).pack(pady=(0, 6))
         self.divider(wrapper, ACCENT_CYAN).pack(fill="x", pady=4)
         Label(wrapper, text="L O G I N   T O   C O N T I N U E",
@@ -499,8 +532,12 @@ class GameHub:
         error_lbl.pack(pady=(0, 8))
 
         def attempt_login(*_):
-            if (user_entry.get().strip().lower() == self.settings["display_name"].lower()
-                    and pass_entry.get() == self.settings["password"]):
+            username = user_entry.get().strip().upper()
+            password = pass_entry.get()
+            users = self.settings.get("users", {})
+            if username in users and users[username] == password:
+                self.current_user = username
+                self.high_scores = self._all_scores.setdefault(username, {})
                 self.show_dashboard()
             else:
                 error_lbl.config(text="⚠  Invalid username or password.")
@@ -528,6 +565,7 @@ class GameHub:
         import xml.etree.ElementTree as ET
 
         self.clear()
+        self._dash_active = True
         self._dash_after_ids = []
 
         bg_canvas = Canvas(self.root, bg=BG_DARK, highlightthickness=0)
@@ -537,7 +575,7 @@ class GameHub:
         # ── top bar ──────────────────────────────────────────
         top = Frame(self.root, bg=BG_DARK)
         top.pack(fill="x", padx=40, pady=(14, 0))
-        Label(top, text=f"◈  {self.settings['display_name'].upper()}'S HUB  ◈",
+        Label(top, text=f"◈  {self.current_user}'S HUB  ◈",
               font=("Courier New", 26, "bold"),
               bg=BG_DARK, fg=ACCENT_CYAN).pack(side="left")
         self.small_btn(top, "⚙  SETTINGS", self.show_settings,
@@ -550,6 +588,8 @@ class GameHub:
         self.divider(self.root, ACCENT_CYAN).pack(fill="x", padx=40, pady=(6, 0))
 
         def tick():
+            if not self._dash_active:
+                return
             now = datetime.datetime.now()
             clock_lbl.config(text=now.strftime("%A  %d %B %Y   %H:%M:%S"))
             aid = self.root.after(1000, tick)
@@ -614,6 +654,8 @@ class GameHub:
                 cond  = self._WMO.get(code, "Unknown")
                 now   = datetime.datetime.now().strftime("%H:%M")
                 def apply():
+                    if not self._dash_active:
+                        return
                     city_lbl.config(text=f"📍 {city}", fg=TEXT_PRIMARY)
                     temp_lbl.config(text=f"{temp}°C")
                     cond_lbl.config(text=cond)
@@ -675,6 +717,8 @@ class GameHub:
             disk     = psutil.disk_usage("C:\\")
             now = datetime.datetime.now().strftime("%H:%M:%S")
             def apply():
+                if not self._dash_active:
+                    return
                 cpu_val.config(text=f"{cpu_pct:.0f}%")
                 freq_val.config(text=f"{freq.current/1000:.1f}G" if freq else "--")
                 ram_val.config(text=f"{ram.percent:.0f}%")
@@ -720,6 +764,8 @@ class GameHub:
                              for item in items[:6] if item.findtext("title", "").strip()]
                 now = datetime.datetime.now().strftime("%H:%M")
                 def apply():
+                    if not self._dash_active:
+                        return
                     for w in news_inner.winfo_children():
                         w.destroy()
                     for i, h in enumerate(headlines):
@@ -819,6 +865,8 @@ class GameHub:
                     f_src  = ""
 
             def apply():
+                if not self._dash_active:
+                    return
                 quote_lbl.config(text=f'"{q_text}"')
                 author_lbl.config(
                     text=f"— {q_author}" if q_author else "")
@@ -969,7 +1017,7 @@ class GameHub:
 
         top_bar = Frame(wrapper, bg=BG_DARK)
         top_bar.pack(fill="x", pady=(0, 6))
-        Label(top_bar, text=f"◈  {self.settings['display_name'].upper()}'S GAME HUB  ◈",
+        Label(top_bar, text=f"◈  {self.current_user}'S GAME HUB  ◈",
               font=FONT_TITLE, bg=BG_DARK, fg=ACCENT_CYAN).pack(side="left")
         self.small_btn(top_bar, "⌂  DASHBOARD", self.show_dashboard,
                        TEXT_DIM).pack(side="right", pady=10)
@@ -1816,33 +1864,64 @@ class GameHub:
     # ══════════════════════════════════════════════════════════
     # UNIVERSITY
     # ══════════════════════════════════════════════════════════
-    def _load_deadlines(self):
-        try:
-            with open(UNIVERSITY_FILE, "r") as f:
-                return json.load(f).get("deadlines", [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            return []
-
-    def _save_deadlines(self, deadlines):
+    def _load_uni_data(self):
+        """Load full university JSON, migrating any old formats."""
         try:
             with open(UNIVERSITY_FILE, "r") as f:
                 data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            data = {}
-        data["deadlines"] = deadlines
+            return {}
+        # Migrate old top-level {"deadlines": [...]}
+        if "deadlines" in data and isinstance(data["deadlines"], list):
+            data["HARRY"] = {"deadlines": data.pop("deadlines"), "timetable": {}}
+        # Migrate flat list-per-user format
+        for user in list(data.keys()):
+            if isinstance(data[user], list):
+                data[user] = {"deadlines": data[user], "timetable": {}}
+        return data
+
+    def _save_uni_data(self, data):
         with open(UNIVERSITY_FILE, "w") as f:
             json.dump(data, f)
 
+    def _user_uni(self, data):
+        """Return (and create if missing) the current user's uni dict."""
+        if self.current_user not in data:
+            data[self.current_user] = {"deadlines": [], "timetable": {}}
+        return data[self.current_user]
+
+    def _load_deadlines(self):
+        data = self._load_uni_data()
+        return self._user_uni(data).get("deadlines", [])
+
+    def _save_deadlines(self, deadlines):
+        data = self._load_uni_data()
+        self._user_uni(data)["deadlines"] = deadlines
+        self._save_uni_data(data)
+
+    def _load_timetable(self):
+        data = self._load_uni_data()
+        tt = self._user_uni(data).get("timetable")
+        if not tt and self.current_user == "HARRY":
+            return {day: list(classes) for day, classes in TIMETABLE.items()}
+        return tt or {}
+
+    def _save_timetable(self, timetable):
+        data = self._load_uni_data()
+        self._user_uni(data)["timetable"] = timetable
+        self._save_uni_data(data)
+
     def _get_next_class(self):
         """Return (day_name, class_dict) for the next upcoming class, or None."""
+        tt = self._load_timetable()
         now = datetime.datetime.now()
         today_wd = now.weekday()  # 0=Mon
         day_names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
         for offset in range(7):
             day = day_names[(today_wd + offset) % 7]
-            if day not in TIMETABLE:
+            if day not in tt or not tt[day]:
                 continue
-            for cls in TIMETABLE[day]:
+            for cls in sorted(tt[day], key=lambda c: c["start"]):
                 if offset == 0:
                     end_h, end_m = map(int, cls["end"].split(":"))
                     cls_end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
@@ -1934,51 +2013,67 @@ class GameHub:
                          padx=16, pady=12)
         tt_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        Label(tt_outer, text="🗓  WEEKLY TIMETABLE",
+        tt_head = Frame(tt_outer, bg=BG_CARD)
+        tt_head.pack(fill="x")
+        Label(tt_head, text="🗓  WEEKLY TIMETABLE",
               font=("Courier New", 12, "bold"),
-              bg=BG_CARD, fg=ACCENT_CYAN).pack(anchor="w")
+              bg=BG_CARD, fg=ACCENT_CYAN).pack(side="left")
+        self.small_btn(tt_head, "✏  EDIT",
+                       lambda: self._edit_timetable_popup(lambda: self.show_university()),
+                       ACCENT_CYAN).pack(side="right")
         self.divider(tt_outer, ACCENT_CYAN).pack(fill="x", pady=(4, 8))
 
-        next_class = self._get_next_class()
         today_name = today.strftime("%A")
+        DAY_ORDER  = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-        for day in ["Monday", "Wednesday", "Friday"]:
-            is_today  = (day == today_name)
-            day_color = ACCENT_CYAN if is_today else TEXT_DIM
-            Label(tt_outer, text=day.upper(),
-                  font=("Courier New", 10, "bold"),
-                  bg=BG_CARD, fg=day_color).pack(anchor="w", pady=(8, 2))
+        tt_inner = Frame(tt_outer, bg=BG_CARD)
+        tt_inner.pack(fill="both", expand=True)
 
-            for cls in TIMETABLE[day]:
-                is_next      = (next_class is not None and
-                                next_class[0] == day and
-                                next_class[1]["start"] == cls["start"])
-                mod_color    = MODULE_COLORS.get(cls["module"], ACCENT_CYAN)
-                border_color = ACCENT_CYAN if is_next else "#2a2a3a"
-
-                row = Frame(tt_outer, bg=BG_CARD2,
-                            highlightbackground=border_color,
-                            highlightthickness=2 if is_next else 1)
-                row.pack(fill="x", pady=2)
-
-                Frame(row, bg=mod_color, width=4).pack(side="left", fill="y")
-
-                info = Frame(row, bg=BG_CARD2, padx=8, pady=6)
-                info.pack(side="left", fill="both", expand=True)
-                Label(info, text=f"{cls['start']} – {cls['end']}",
+        def render_timetable():
+            for w in tt_inner.winfo_children():
+                w.destroy()
+            timetable  = self._load_timetable()
+            next_class = self._get_next_class()
+            days_with  = [d for d in DAY_ORDER if d in timetable and timetable[d]]
+            if not days_with:
+                Label(tt_inner, text="No classes yet.\nClick ✏ EDIT to add classes.",
+                      font=FONT_BODY, bg=BG_CARD, fg=TEXT_DIM,
+                      justify="center").pack(pady=20)
+                return
+            for day in days_with:
+                is_today  = (day == today_name)
+                day_color = ACCENT_CYAN if is_today else TEXT_DIM
+                Label(tt_inner, text=day.upper(),
                       font=("Courier New", 10, "bold"),
-                      bg=BG_CARD2, fg=mod_color).pack(anchor="w")
-                Label(info, text=f"{cls['type']}  ·  {cls['module']}",
-                      font=("Courier New", 10, "bold"),
-                      bg=BG_CARD2, fg=TEXT_PRIMARY).pack(anchor="w")
-                Label(info, text=cls["room"],
-                      font=("Courier New", 9),
-                      bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+                      bg=BG_CARD, fg=day_color).pack(anchor="w", pady=(8, 2))
+                for cls in sorted(timetable[day], key=lambda c: c["start"]):
+                    is_next      = (next_class is not None and
+                                    next_class[0] == day and
+                                    next_class[1]["start"] == cls["start"])
+                    mod_color    = MODULE_COLORS.get(cls["module"], ACCENT_CYAN)
+                    border_color = ACCENT_CYAN if is_next else "#2a2a3a"
+                    row = Frame(tt_inner, bg=BG_CARD2,
+                                highlightbackground=border_color,
+                                highlightthickness=2 if is_next else 1)
+                    row.pack(fill="x", pady=2)
+                    Frame(row, bg=mod_color, width=4).pack(side="left", fill="y")
+                    info = Frame(row, bg=BG_CARD2, padx=8, pady=6)
+                    info.pack(side="left", fill="both", expand=True)
+                    Label(info, text=f"{cls['start']} – {cls['end']}",
+                          font=("Courier New", 10, "bold"),
+                          bg=BG_CARD2, fg=mod_color).pack(anchor="w")
+                    Label(info, text=f"{cls['type']}  ·  {cls['module']}",
+                          font=("Courier New", 10, "bold"),
+                          bg=BG_CARD2, fg=TEXT_PRIMARY).pack(anchor="w")
+                    Label(info, text=cls["room"],
+                          font=("Courier New", 9),
+                          bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+                    if is_next:
+                        Label(row, text="▶  NEXT",
+                              font=("Courier New", 9, "bold"),
+                              bg=BG_CARD2, fg=ACCENT_CYAN).pack(side="right", padx=8)
 
-                if is_next:
-                    Label(row, text="▶  NEXT",
-                          font=("Courier New", 9, "bold"),
-                          bg=BG_CARD2, fg=ACCENT_CYAN).pack(side="right", padx=8)
+        render_timetable()
 
         # ── RIGHT: Deadlines ──
         dl_outer = Frame(main, bg=BG_CARD,
@@ -2198,6 +2293,176 @@ class GameHub:
         y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
         win.geometry(f"+{x}+{y}")
 
+
+    # ══════════════════════════════════════════════════════════
+    # TIMETABLE EDITOR
+    # ══════════════════════════════════════════════════════════
+    def _edit_timetable_popup(self, on_close=None):
+        import re
+        DAY_ORDER = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        timetable = self._load_timetable()
+
+        win = tk.Toplevel(self.root)
+        win.title("Edit Timetable")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+        win.grab_set()
+
+        Label(win, text="✏  EDIT TIMETABLE",
+              font=("Courier New", 18, "bold"),
+              bg=BG_DARK, fg=ACCENT_CYAN).pack(pady=(20, 4))
+        Canvas(win, height=2, bg=ACCENT_CYAN, highlightthickness=0,
+               bd=0, width=520).pack(fill="x", padx=30)
+
+        # ── Existing classes list ──
+        list_frame = Frame(win, bg=BG_DARK)
+        list_frame.pack(fill="x", padx=30, pady=(8, 0))
+
+        def render_list():
+            for w in list_frame.winfo_children():
+                w.destroy()
+            has_any = any(timetable.get(d) for d in DAY_ORDER)
+            if not has_any:
+                Label(list_frame, text="No classes yet. Add one below.",
+                      font=FONT_BODY, bg=BG_DARK, fg=TEXT_DIM).pack(pady=8)
+                return
+            for day in DAY_ORDER:
+                if not timetable.get(day):
+                    continue
+                Label(list_frame, text=day.upper(),
+                      font=("Courier New", 10, "bold"),
+                      bg=BG_DARK, fg=ACCENT_CYAN).pack(anchor="w", pady=(6, 2))
+                for cls in sorted(timetable[day], key=lambda c: c["start"]):
+                    row = Frame(list_frame, bg=BG_CARD2,
+                                highlightbackground=ACCENT_CYAN, highlightthickness=1)
+                    row.pack(fill="x", pady=2)
+                    Label(row,
+                          text=f"  {cls['start']}–{cls['end']}  ·  {cls['type']}  ·  {cls['module']}",
+                          font=("Courier New", 10), bg=BG_CARD2,
+                          fg=TEXT_PRIMARY, pady=5).pack(side="left")
+                    def make_delete(d=day, start=cls["start"]):
+                        def delete():
+                            timetable[d] = [c for c in timetable[d] if c["start"] != start]
+                            if not timetable[d]:
+                                del timetable[d]
+                            self._save_timetable(timetable)
+                            render_list()
+                        return delete
+                    Button(row, text="✕", font=("Courier New", 10, "bold"),
+                           bg=BG_CARD2, fg=ACCENT_PINK, relief="flat", bd=0,
+                           activebackground=ACCENT_PINK, activeforeground=BG_DARK,
+                           cursor="hand2", padx=10, pady=5,
+                           command=make_delete()).pack(side="right")
+
+        render_list()
+
+        # ── Add class form ──
+        Canvas(win, height=1, bg=TEXT_DIM, highlightthickness=0,
+               bd=0).pack(fill="x", padx=30, pady=(12, 0))
+        Label(win, text="ADD CLASS", font=("Courier New", 11, "bold"),
+              bg=BG_DARK, fg=TEXT_DIM).pack(pady=(8, 4))
+
+        form = Frame(win, bg=BG_DARK)
+        form.pack(padx=30)
+
+        day_var  = tk.StringVar(value="Monday")
+        type_var = tk.StringVar(value="Lec")
+
+        # Row 0: Day / Start / End / Type
+        Label(form, text="DAY", font=("Courier New", 9), bg=BG_DARK, fg=TEXT_DIM).grid(row=0, column=0, sticky="w")
+        day_menu = tk.OptionMenu(form, day_var, *DAY_ORDER)
+        day_menu.config(bg=BG_CARD2, fg=ACCENT_CYAN, font=("Courier New", 11),
+                        relief="flat", bd=0, highlightthickness=0,
+                        activebackground=ACCENT_CYAN, activeforeground=BG_DARK)
+        day_menu["menu"].config(bg=BG_CARD2, fg=ACCENT_CYAN, font=("Courier New", 11))
+        day_menu.grid(row=1, column=0, padx=(0, 8), pady=(0, 6))
+
+        def _time_field(col, label, default):
+            Label(form, text=label, font=("Courier New", 9), bg=BG_DARK,
+                  fg=TEXT_DIM).grid(row=0, column=col, sticky="w", padx=(8, 0))
+            ef = Frame(form, bg=ACCENT_CYAN, padx=1, pady=1)
+            ef.grid(row=1, column=col, padx=(8, 0), pady=(0, 6))
+            e = Entry(ef, font=("Courier New", 12), width=7, bg=BG_CARD2,
+                      fg=ACCENT_CYAN, insertbackground=ACCENT_CYAN,
+                      relief="flat", bd=0, justify="center")
+            e.insert(0, default)
+            e.pack(ipady=4, ipadx=4)
+            return e
+
+        start_e = _time_field(1, "START", "09:00")
+        end_e   = _time_field(2, "END",   "11:00")
+
+        Label(form, text="TYPE", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=0, column=3, sticky="w", padx=(8, 0))
+        type_menu = tk.OptionMenu(form, type_var, "Lec", "Sem", "Lab", "Tut", "Other")
+        type_menu.config(bg=BG_CARD2, fg=ACCENT_CYAN, font=("Courier New", 11),
+                         relief="flat", bd=0, highlightthickness=0,
+                         activebackground=ACCENT_CYAN, activeforeground=BG_DARK)
+        type_menu["menu"].config(bg=BG_CARD2, fg=ACCENT_CYAN, font=("Courier New", 11))
+        type_menu.grid(row=1, column=3, padx=(8, 0), pady=(0, 6))
+
+        # Row 2: Module / Room
+        Label(form, text="MODULE", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=2, column=0, columnspan=2, sticky="w")
+        mf = Frame(form, bg=ACCENT_CYAN, padx=1, pady=1)
+        mf.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        module_e = Entry(mf, font=("Courier New", 12), width=24, bg=BG_CARD2,
+                         fg=ACCENT_CYAN, insertbackground=ACCENT_CYAN,
+                         relief="flat", bd=0)
+        module_e.pack(fill="x", ipady=4, ipadx=4)
+
+        Label(form, text="ROOM", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=2, column=2, columnspan=2, sticky="w", padx=(8, 0))
+        rf = Frame(form, bg=ACCENT_CYAN, padx=1, pady=1)
+        rf.grid(row=3, column=2, columnspan=2, sticky="ew", padx=(8, 0), pady=(0, 6))
+        room_e = Entry(rf, font=("Courier New", 12), width=24, bg=BG_CARD2,
+                       fg=ACCENT_CYAN, insertbackground=ACCENT_CYAN,
+                       relief="flat", bd=0)
+        room_e.pack(fill="x", ipady=4, ipadx=4)
+
+        err_lbl = Label(win, text="", font=FONT_BODY, bg=BG_DARK, fg=ACCENT_PINK)
+        err_lbl.pack()
+
+        def add_class(*_):
+            day    = day_var.get()
+            start  = start_e.get().strip()
+            end    = end_e.get().strip()
+            typ    = type_var.get()
+            module = module_e.get().strip()
+            room   = room_e.get().strip()
+            if not re.match(r"^\d{1,2}:\d{2}$", start) or not re.match(r"^\d{1,2}:\d{2}$", end):
+                err_lbl.config(text="⚠  Use HH:MM format for times.")
+                return
+            if not module:
+                err_lbl.config(text="⚠  Module name is required.")
+                return
+            timetable.setdefault(day, [])
+            if any(c["start"] == start for c in timetable[day]):
+                err_lbl.config(text="⚠  A class already starts at that time on that day.")
+                return
+            timetable[day].append({"start": start, "end": end,
+                                   "type": typ, "module": module, "room": room})
+            self._save_timetable(timetable)
+            module_e.delete(0, "end")
+            room_e.delete(0, "end")
+            err_lbl.config(text="")
+            render_list()
+
+        btn_row = Frame(win, bg=BG_DARK)
+        btn_row.pack(pady=(0, 20))
+        self.small_btn(btn_row, "+  ADD CLASS", add_class, ACCENT_CYAN).pack(side="left", padx=6)
+
+        def close():
+            win.destroy()
+            if on_close:
+                on_close()
+
+        self.small_btn(btn_row, "✓  DONE", close, ACCENT_GREEN).pack(side="left", padx=6)
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width()  - win.winfo_width())  // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
 
     # ══════════════════════════════════════════════════════════
     # SETTINGS
