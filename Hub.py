@@ -35,6 +35,7 @@ FONT_BTN_LG    = ("Courier New", 18, "bold")
 SCORES_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_hub_scores.json")
 SETTINGS_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_settings.json")
 DAILY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_cache.json")
+BUDGET_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_data.json")
 
 # ============ SNAKE CONSTANTS ============
 GAME_WIDTH   = 600
@@ -295,6 +296,50 @@ class GameHub:
         data["date"] = str(datetime.date.today())
         with open(DAILY_CACHE_FILE, "w") as f:
             json.dump(data, f)
+
+    # ─── BUDGET ───────────────────────────────────────────────
+    _DEFAULT_TARGETS = {
+        "Food":          25,
+        "Commuting":     10,
+        "Bills":         20,
+        "Entertainment": 10,
+        "Savings":       20,
+        "Other":         15,
+    }
+
+    def _filter_period(self, txns, period):
+        today = datetime.date.today()
+        if period == "day":
+            return [t for t in txns if t["date"] == str(today)]
+        elif period == "week":
+            start = today - datetime.timedelta(days=today.weekday())
+            end   = start + datetime.timedelta(days=6)
+            return [t for t in txns
+                    if start <= datetime.date.fromisoformat(t["date"]) <= end]
+        else:  # month
+            prefix = today.strftime("%Y-%m")
+            return [t for t in txns if t["date"].startswith(prefix)]
+
+    def _load_budget(self):
+        try:
+            with open(BUDGET_FILE, "r") as f:
+                all_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            all_data = {}
+        user = all_data.setdefault(self.current_user, {})
+        user.setdefault("transactions", [])
+        user.setdefault("targets", dict(self._DEFAULT_TARGETS))
+        return user
+
+    def _save_budget(self, user_data):
+        try:
+            with open(BUDGET_FILE, "r") as f:
+                all_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            all_data = {}
+        all_data[self.current_user] = user_data
+        with open(BUDGET_FILE, "w") as f:
+            json.dump(all_data, f)
 
     def _save_scores(self):
         self._all_scores[self.current_user] = self.high_scores
@@ -978,9 +1023,10 @@ class GameHub:
         nav_row.pack(pady=(8, 10))
 
         nav_items = [
-            ("🎮", "GAME HUB",   "Snake, Wordle & more",  ACCENT_GREEN,  self.show_home),
-            ("📚", "UNIVERSITY", "Notes & assignments",    ACCENT_YELLOW, self.show_university),
-            ("✅", "TO-DO LIST", "Tasks & reminders",      ACCENT_TEAL,   None),
+            ("🎮", "GAME HUB",   "Snake, Wordle & more",    ACCENT_GREEN,  self.show_home),
+            ("📚", "UNIVERSITY", "Timetable & deadlines",   ACCENT_YELLOW, self.show_university),
+            ("💰", "BUDGET",     "Income & expenses",       ACCENT_TEAL,   self.show_budget),
+            ("✅", "TO-DO LIST", "Tasks & reminders",        ACCENT_PINK,   None),
         ]
 
         for icon, title, desc, color, cmd in nav_items:
@@ -2758,6 +2804,647 @@ class GameHub:
         self.small_btn(clr_card, "⚠  CLEAR ALL", clear_all,
                        ACCENT_PINK).pack(anchor="w", pady=(0, 4))
         clr_msg.pack(anchor="w")
+
+
+    # ══════════════════════════════════════════════════════════
+    # BUDGET
+    # ══════════════════════════════════════════════════════════
+    def show_budget(self):
+        self.clear()
+
+        bg_canvas = Canvas(self.root, bg=BG_DARK, highlightthickness=0)
+        bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self._draw_grid(bg_canvas)
+
+        # ── Header ──
+        header = Frame(self.root, bg=BG_DARK, pady=8)
+        header.pack(fill="x", padx=40)
+        Label(header, text="💰  BUDGET",
+              font=("Courier New", 26, "bold"),
+              bg=BG_DARK, fg=ACCENT_TEAL).pack(side="left")
+        self.small_btn(header, "🎮  GAMES",    self.show_home,      TEXT_DIM).pack(side="right", padx=(6, 0))
+        self.small_btn(header, "⌂  DASHBOARD", self.show_dashboard, TEXT_DIM).pack(side="right", padx=(6, 0))
+        self.divider(self.root, ACCENT_TEAL).pack(fill="x", padx=40, pady=(0, 6))
+
+        data     = self._load_budget()
+        period   = data.get("period", "month")
+        all_txns = data["transactions"]
+        txns     = self._filter_period(all_txns, period)
+
+        # ── Period selector ───────────────────────────────────
+        period_row = Frame(self.root, bg=BG_DARK)
+        period_row.pack(fill="x", padx=40, pady=(0, 10))
+
+        def set_period(p):
+            data["period"] = p
+            self._save_budget(data)
+            self.show_budget()
+
+        for p, lbl in [("day", "TODAY"), ("week", "THIS WEEK"), ("month", "THIS MONTH")]:
+            active = (p == period)
+            Button(period_row, text=lbl,
+                   font=("Courier New", 12, "bold"),
+                   bg=ACCENT_TEAL if active else BG_CARD2,
+                   fg=BG_DARK if active else TEXT_DIM,
+                   relief="flat", bd=0, padx=22, pady=8,
+                   cursor="hand2",
+                   command=lambda p=p: set_period(p)).pack(side="left", padx=(0, 4))
+
+        period_name = {"day": "Today", "week": "This Week", "month": "This Month"}[period]
+
+        # ── Summary row ──────────────────────────────────────
+        total_income  = sum(t["amount"] for t in txns if t["type"] == "income")
+        total_expense = sum(t["amount"] for t in txns if t["type"] == "expense")
+        balance       = total_income - total_expense
+
+        sum_row = Frame(self.root, bg=BG_DARK)
+        sum_row.pack(fill="x", padx=40, pady=(0, 10))
+        for col in range(3):
+            sum_row.columnconfigure(col, weight=1)
+
+        def _summary_card(col, label, value, color):
+            card = Frame(sum_row, bg=BG_CARD,
+                         highlightbackground=color, highlightthickness=2,
+                         padx=20, pady=14)
+            card.grid(row=0, column=col, sticky="nsew",
+                      padx=(0 if col == 0 else 8, 0))
+            Label(card, text=label, font=("Courier New", 11, "bold"),
+                  bg=BG_CARD, fg=TEXT_DIM).pack(anchor="w")
+            Label(card, text=f"£{value:,.2f}",
+                  font=("Courier New", 28, "bold"),
+                  bg=BG_CARD, fg=color).pack(anchor="w")
+
+        _summary_card(0, f"INCOME · {period_name.upper()}",   total_income,  ACCENT_GREEN)
+        _summary_card(1, f"EXPENSES · {period_name.upper()}", total_expense, ACCENT_PINK)
+        _summary_card(2, "BALANCE",        balance,
+                      ACCENT_GREEN if balance >= 0 else ACCENT_PINK)
+
+        # ── Spending plan card ────────────────────────────────
+        plan_card = Frame(self.root, bg=BG_CARD,
+                          highlightbackground=ACCENT_PURPLE, highlightthickness=2,
+                          padx=20, pady=14)
+        plan_card.pack(fill="x", padx=40, pady=(10, 0))
+
+        plan_head = Frame(plan_card, bg=BG_CARD)
+        plan_head.pack(fill="x")
+        Label(plan_head, text="💸  SPENDING PLAN",
+              font=("Courier New", 12, "bold"),
+              bg=BG_CARD, fg=ACCENT_PURPLE).pack(side="left")
+        Label(plan_head,
+              text=f"{period_name}  ·  Income £{total_income:,.2f}  ·  Balance £{balance:,.2f}",
+              font=("Courier New", 10), bg=BG_CARD, fg=TEXT_DIM).pack(side="right")
+        self.divider(plan_card, ACCENT_PURPLE).pack(fill="x", pady=(4, 10))
+
+        plan_grid = Frame(plan_card, bg=BG_CARD)
+        plan_grid.pack(fill="x")
+
+        targets   = data["targets"]
+        cat_spend = {}
+        for t in txns:
+            if t["type"] == "expense":
+                cat_spend[t["category"]] = cat_spend.get(t["category"], 0) + t["amount"]
+
+        cats = list(targets.items())
+        cols = 3
+        for c in range(cols):
+            plan_grid.columnconfigure(c, weight=1)
+
+        for idx, (cat, pct) in enumerate(cats):
+            allocated = total_income * pct / 100
+            spent     = cat_spend.get(cat, 0)
+            remaining = allocated - spent
+            over      = remaining < 0
+            r, c      = divmod(idx, cols)
+
+            tile = Frame(plan_grid, bg=BG_CARD2,
+                         highlightbackground=ACCENT_PINK if over else ACCENT_PURPLE,
+                         highlightthickness=1, padx=14, pady=10)
+            tile.grid(row=r, column=c, sticky="nsew", padx=4, pady=4)
+
+            # Category name + %
+            top = Frame(tile, bg=BG_CARD2)
+            top.pack(fill="x")
+            Label(top, text=cat, font=("Courier New", 11, "bold"),
+                  bg=BG_CARD2, fg=TEXT_PRIMARY).pack(side="left")
+            Label(top, text=f"{pct}%", font=("Courier New", 10, "bold"),
+                  bg=BG_CARD2, fg=ACCENT_PURPLE).pack(side="right")
+
+            # Allocated
+            Label(tile, text=f"Allocated   £{allocated:,.2f}",
+                  font=("Courier New", 10), bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+
+            # Spent + progress bar
+            bar_pct = min(spent / allocated, 1.0) if allocated > 0 else 0
+            Label(tile, text=f"Spent         £{spent:,.2f}",
+                  font=("Courier New", 10), bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+            bar_bg = Canvas(tile, height=8, bg="#1e1e2e", highlightthickness=0)
+            bar_bg.pack(fill="x", pady=(3, 4))
+            def draw_plan_bar(event, c=bar_bg, bp=bar_pct, o=over):
+                c.delete("all")
+                c.create_rectangle(0, 0, event.width, 8, fill="#1e1e2e", outline="")
+                c.create_rectangle(0, 0, int(event.width * bp), 8,
+                                   fill=ACCENT_PINK if o else ACCENT_TEAL, outline="")
+            bar_bg.bind("<Configure>", draw_plan_bar)
+
+            # Remaining
+            rem_color = ACCENT_PINK if over else ACCENT_GREEN
+            Label(tile,
+                  text=f"{'Over by' if over else 'Remaining'}  £{abs(remaining):,.2f}",
+                  font=("Courier New", 11, "bold"),
+                  bg=BG_CARD2, fg=rem_color).pack(anchor="w")
+
+        # ── Main two-column layout ────────────────────────────
+        main = Frame(self.root, bg=BG_DARK)
+        main.pack(fill="both", expand=True, padx=40, pady=(0, 12))
+        main.columnconfigure(0, weight=2)
+        main.columnconfigure(1, weight=3)
+        main.rowconfigure(0, weight=1)
+
+        # ── LEFT: Category breakdown ──────────────────────────
+        cat_card = Frame(main, bg=BG_CARD,
+                         highlightbackground=ACCENT_TEAL, highlightthickness=2,
+                         padx=18, pady=14)
+        cat_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        cat_head = Frame(cat_card, bg=BG_CARD)
+        cat_head.pack(fill="x")
+        Label(cat_head, text="📊  CATEGORY TARGETS",
+              font=("Courier New", 12, "bold"),
+              bg=BG_CARD, fg=ACCENT_TEAL).pack(side="left")
+        self.small_btn(cat_head, "✏  EDIT",
+                       lambda: self._edit_targets_popup(data, refresh),
+                       ACCENT_TEAL).pack(side="right")
+        self.divider(cat_card, ACCENT_TEAL).pack(fill="x", pady=(4, 10))
+
+        cat_inner = Frame(cat_card, bg=BG_CARD)
+        cat_inner.pack(fill="both", expand=True)
+
+        def render_categories():
+            for w in cat_inner.winfo_children():
+                w.destroy()
+            targets = data["targets"]
+            # Actual spend per category
+            cat_spend = {}
+            for t in txns:
+                if t["type"] == "expense":
+                    cat_spend[t["category"]] = cat_spend.get(t["category"], 0) + t["amount"]
+
+            for cat, target_pct in targets.items():
+                spent     = cat_spend.get(cat, 0)
+                actual_pct = (spent / total_expense * 100) if total_expense > 0 else 0
+                over       = actual_pct > target_pct
+
+                row = Frame(cat_inner, bg=BG_CARD)
+                row.pack(fill="x", pady=4)
+
+                top = Frame(row, bg=BG_CARD)
+                top.pack(fill="x")
+                Label(top, text=cat, font=("Courier New", 11, "bold"),
+                      bg=BG_CARD, fg=TEXT_PRIMARY).pack(side="left")
+                Label(top,
+                      text=f"£{spent:,.2f}  ·  {actual_pct:.1f}% / {target_pct}% target",
+                      font=("Courier New", 10),
+                      bg=BG_CARD,
+                      fg=ACCENT_PINK if over else TEXT_DIM).pack(side="right")
+
+                bar_bg = Canvas(row, height=12, bg=BG_CARD2, highlightthickness=0)
+                bar_bg.pack(fill="x", pady=(3, 0))
+
+                def draw_bar(event, c=bar_bg, ap=actual_pct, tp=target_pct, o=over):
+                    w = event.width
+                    c.delete("all")
+                    c.create_rectangle(0, 0, w, 12, fill=BG_CARD2, outline="")
+                    # target marker
+                    tx = int(w * min(tp, 100) / 100)
+                    c.create_rectangle(0, 0, int(w * min(ap, 100) / 100), 12,
+                                       fill=ACCENT_PINK if o else ACCENT_TEAL, outline="")
+                    c.create_line(tx, 0, tx, 12, fill=TEXT_DIM, width=2)
+
+                bar_bg.bind("<Configure>", draw_bar)
+
+        render_categories()
+
+        # ── RIGHT: Transaction log ────────────────────────────
+        log_card = Frame(main, bg=BG_CARD,
+                         highlightbackground=ACCENT_ORANGE, highlightthickness=2,
+                         padx=18, pady=14)
+        log_card.grid(row=0, column=1, sticky="nsew")
+
+        log_head = Frame(log_card, bg=BG_CARD)
+        log_head.pack(fill="x")
+        Label(log_head, text="📋  TRANSACTIONS",
+              font=("Courier New", 12, "bold"),
+              bg=BG_CARD, fg=ACCENT_ORANGE).pack(side="left")
+        self.small_btn(log_head, "+  ADD",
+                       lambda: self._add_transaction_popup(data, refresh),
+                       ACCENT_ORANGE).pack(side="right")
+        self.divider(log_card, ACCENT_ORANGE).pack(fill="x", pady=(4, 6))
+
+        # Scrollable list
+        log_wrap = Frame(log_card, bg=BG_CARD)
+        log_wrap.pack(fill="both", expand=True)
+        log_canvas = Canvas(log_wrap, bg=BG_CARD, highlightthickness=0)
+        log_sb = tk.Scrollbar(log_wrap, orient="vertical", command=log_canvas.yview)
+        log_canvas.configure(yscrollcommand=log_sb.set)
+        log_sb.pack(side="right", fill="y")
+        log_canvas.pack(side="left", fill="both", expand=True)
+        log_inner = Frame(log_canvas, bg=BG_CARD)
+        log_win = log_canvas.create_window((0, 0), window=log_inner, anchor="nw")
+        log_inner.bind("<Configure>",
+                       lambda e: log_canvas.configure(scrollregion=log_canvas.bbox("all")))
+        log_canvas.bind("<Configure>",
+                        lambda e: log_canvas.itemconfig(log_win, width=e.width))
+        log_canvas.bind("<MouseWheel>",
+                        lambda e: log_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        def render_log():
+            for w in log_inner.winfo_children():
+                w.destroy()
+            sorted_txns = sorted(txns, key=lambda t: t["date"], reverse=True)
+            if not sorted_txns:
+                Label(log_inner, text="No transactions yet.\nClick  +  ADD  to get started.",
+                      font=FONT_BODY, bg=BG_CARD, fg=TEXT_DIM,
+                      justify="center").pack(pady=30)
+                return
+            for i, t in enumerate(sorted_txns):
+                is_income = t["type"] == "income"
+                color     = ACCENT_GREEN if is_income else ACCENT_PINK
+                label     = t.get("source", "") if is_income else t.get("category", "")
+                row = Frame(log_inner, bg=BG_CARD2,
+                            highlightbackground=color, highlightthickness=1)
+                row.pack(fill="x", pady=2)
+
+                Frame(row, bg=color, width=4).pack(side="left", fill="y")
+
+                info = Frame(row, bg=BG_CARD2, padx=8, pady=6)
+                info.pack(side="left", fill="both", expand=True)
+                Label(info, text=f"{'▲' if is_income else '▼'}  {label}",
+                      font=("Courier New", 11, "bold"),
+                      bg=BG_CARD2, fg=color).pack(anchor="w")
+                note = t.get("note", "")
+                if note:
+                    Label(info, text=note, font=("Courier New", 9),
+                          bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+                Label(info, text=t["date"], font=("Courier New", 9),
+                      bg=BG_CARD2, fg=TEXT_DIM).pack(anchor="w")
+
+                Label(row, text=f"£{t['amount']:,.2f}",
+                      font=("Courier New", 15, "bold"),
+                      bg=BG_CARD2, fg=color).pack(side="right", padx=12)
+
+                def make_delete(txn=t):
+                    def delete():
+                        try:
+                            data["transactions"].remove(txn)
+                        except ValueError:
+                            pass
+                        self._save_budget(data)
+                        refresh()
+                    return delete
+                Button(row, text="✕", font=("Courier New", 9, "bold"),
+                       bg=BG_CARD2, fg=TEXT_DIM, relief="flat", bd=0,
+                       activebackground=ACCENT_PINK, activeforeground=BG_DARK,
+                       cursor="hand2", padx=6, pady=6,
+                       command=make_delete(t)).pack(side="right")
+
+        render_log()
+
+        def refresh():
+            self.show_budget()
+
+    def _add_transaction_popup(self, data, on_save):
+        win = tk.Toplevel(self.root)
+        win.title("Add Transaction")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+        win.grab_set()
+
+        Label(win, text="➕  ADD TRANSACTION",
+              font=("Courier New", 18, "bold"),
+              bg=BG_DARK, fg=ACCENT_ORANGE).pack(pady=(20, 4))
+        Canvas(win, height=2, bg=ACCENT_ORANGE, highlightthickness=0,
+               bd=0, width=420).pack(fill="x", padx=30)
+
+        form = Frame(win, bg=BG_DARK)
+        form.pack(padx=30, pady=12)
+
+        # Type toggle
+        type_var = tk.StringVar(value="expense")
+        Label(form, text="TYPE", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=0, column=0, columnspan=2, sticky="w")
+        tog = Frame(form, bg=BG_DARK)
+        tog.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        inc_btn = Button(tog, text="▲ INCOME",  font=FONT_BTN,
+                         bg=ACCENT_GREEN, fg=BG_DARK, relief="flat", bd=0,
+                         padx=14, pady=6, cursor="hand2",
+                         command=lambda: type_var.set("income"))
+        inc_btn.pack(side="left", padx=(0, 4))
+        exp_btn = Button(tog, text="▼ EXPENSE", font=FONT_BTN,
+                         bg=BG_CARD2, fg=ACCENT_PINK, relief="flat", bd=0,
+                         padx=14, pady=6, cursor="hand2",
+                         command=lambda: type_var.set("expense"))
+        exp_btn.pack(side="left")
+
+        def on_type(*_):
+            if type_var.get() == "income":
+                inc_btn.config(bg=ACCENT_GREEN, fg=BG_DARK)
+                exp_btn.config(bg=BG_CARD2, fg=ACCENT_PINK)
+                cat_lbl.config(text="SOURCE")
+            else:
+                inc_btn.config(bg=BG_CARD2, fg=ACCENT_GREEN)
+                exp_btn.config(bg=ACCENT_PINK, fg=BG_DARK)
+                cat_lbl.config(text="CATEGORY")
+        type_var.trace_add("write", on_type)
+
+        # Amount
+        Label(form, text="AMOUNT (£)", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=2, column=0, sticky="w")
+        af = Frame(form, bg=ACCENT_ORANGE, padx=1, pady=1)
+        af.grid(row=3, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+        amount_e = Entry(af, font=("Courier New", 14), width=12, bg=BG_CARD2,
+                         fg=ACCENT_ORANGE, insertbackground=ACCENT_ORANGE,
+                         relief="flat", bd=0, justify="center")
+        amount_e.pack(ipady=6, ipadx=6)
+
+        # Date
+        Label(form, text="DATE", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=2, column=1, sticky="w", padx=(8, 0))
+        df = Frame(form, bg=ACCENT_ORANGE, padx=1, pady=1)
+        df.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
+        date_e = Entry(df, font=("Courier New", 14), width=12, bg=BG_CARD2,
+                       fg=ACCENT_ORANGE, insertbackground=ACCENT_ORANGE,
+                       relief="flat", bd=0, justify="center")
+        date_e.insert(0, str(datetime.date.today()))
+        date_e.pack(ipady=6, ipadx=6)
+
+        # Category / Source
+        categories = list(data["targets"].keys()) + ["Other"]
+        cat_var = tk.StringVar(value=categories[0])
+        cat_lbl = Label(form, text="CATEGORY", font=("Courier New", 9),
+                        bg=BG_DARK, fg=TEXT_DIM)
+        cat_lbl.grid(row=4, column=0, sticky="w")
+        cat_menu = tk.OptionMenu(form, cat_var, *categories)
+        cat_menu.config(bg=BG_CARD2, fg=ACCENT_ORANGE, font=("Courier New", 11),
+                        relief="flat", bd=0, highlightthickness=0,
+                        activebackground=ACCENT_ORANGE, activeforeground=BG_DARK)
+        cat_menu["menu"].config(bg=BG_CARD2, fg=ACCENT_ORANGE, font=("Courier New", 11))
+        cat_menu.grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+
+        # Source entry (shown for income)
+        source_var = tk.StringVar()
+        sf = Frame(form, bg=ACCENT_GREEN, padx=1, pady=1)
+        source_e = Entry(sf, font=("Courier New", 12), width=14, bg=BG_CARD2,
+                         fg=ACCENT_GREEN, insertbackground=ACCENT_GREEN,
+                         relief="flat", bd=0)
+        source_e.pack(ipady=5, ipadx=6)
+
+        # Note
+        Label(form, text="NOTE (optional)", font=("Courier New", 9), bg=BG_DARK,
+              fg=TEXT_DIM).grid(row=4, column=1, sticky="w", padx=(8, 0))
+        nf = Frame(form, bg=ACCENT_ORANGE, padx=1, pady=1)
+        nf.grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
+        note_e = Entry(nf, font=("Courier New", 12), width=14, bg=BG_CARD2,
+                       fg=ACCENT_ORANGE, insertbackground=ACCENT_ORANGE,
+                       relief="flat", bd=0)
+        note_e.pack(ipady=5, ipadx=6)
+
+        # Swap category/source widget based on type
+        cat_menu.grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+
+        def on_type_widget(*_):
+            if type_var.get() == "income":
+                cat_menu.grid_remove()
+                sf.grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+            else:
+                sf.grid_remove()
+                cat_menu.grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+        type_var.trace_add("write", on_type_widget)
+
+        err_lbl = Label(win, text="", font=FONT_BODY, bg=BG_DARK, fg=ACCENT_PINK)
+        err_lbl.pack()
+
+        def save(*_):
+            try:
+                amount = float(amount_e.get().strip().replace("£", "").replace(",", ""))
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                err_lbl.config(text="⚠  Enter a valid positive amount.")
+                return
+            date_str = date_e.get().strip()
+            try:
+                datetime.date.fromisoformat(date_str)
+            except ValueError:
+                err_lbl.config(text="⚠  Date must be YYYY-MM-DD.")
+                return
+            t_type = type_var.get()
+            if t_type == "income":
+                src = source_e.get().strip() or "Income"
+                txn = {"type": "income", "amount": amount,
+                       "source": src, "date": date_str,
+                       "note": note_e.get().strip()}
+            else:
+                txn = {"type": "expense", "amount": amount,
+                       "category": cat_var.get(), "date": date_str,
+                       "note": note_e.get().strip()}
+            data["transactions"].append(txn)
+            self._save_budget(data)
+            win.destroy()
+            on_save()
+
+        self.small_btn(win, "✓  SAVE", save, ACCENT_ORANGE).pack(pady=(0, 20))
+        amount_e.focus()
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width()  - win.winfo_width())  // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
+
+    def _edit_targets_popup(self, data, on_save):
+        targets = data["targets"]
+        vars_   = {}   # cat -> IntVar
+
+        win = tk.Toplevel(self.root)
+        win.title("Edit Budget Targets")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+        win.grab_set()
+
+        # ── Title ──
+        Label(win, text="🎯  BUDGET TARGETS",
+              font=("Courier New", 18, "bold"),
+              bg=BG_DARK, fg=ACCENT_TEAL).pack(pady=(20, 2))
+        Label(win, text="Each category's % of total expenses  ·  Must sum to 100%",
+              font=("Courier New", 10), bg=BG_DARK, fg=TEXT_DIM).pack()
+        Canvas(win, height=2, bg=ACCENT_TEAL, highlightthickness=0,
+               bd=0, width=560).pack(fill="x", padx=30, pady=(8, 0))
+
+        # ── Category rows (scrollable if many) ──
+        rows_frame = Frame(win, bg=BG_DARK)
+        rows_frame.pack(fill="x", padx=30, pady=8)
+
+        # ── Total bar + label ──
+        Canvas(win, height=1, bg=TEXT_DIM, highlightthickness=0,
+               bd=0).pack(fill="x", padx=30)
+        total_row = Frame(win, bg=BG_DARK)
+        total_row.pack(fill="x", padx=30, pady=(6, 0))
+        total_lbl = Label(total_row, text="", font=("Courier New", 12, "bold"),
+                          bg=BG_DARK, fg=ACCENT_TEAL)
+        total_lbl.pack(side="left")
+        total_bar = Canvas(total_row, height=14, bg=BG_CARD2,
+                           highlightthickness=0, width=200)
+        total_bar.pack(side="right", fill="x", expand=True, padx=(12, 0))
+
+        err_lbl = Label(win, text="", font=FONT_BODY, bg=BG_DARK, fg=ACCENT_PINK)
+        err_lbl.pack(pady=(2, 0))
+
+        def get_total():
+            try:
+                return sum(v.get() for v in vars_.values())
+            except Exception:
+                return 0
+
+        def update_total(*_):
+            total = get_total()
+            ok    = (total == 100)
+            color = ACCENT_GREEN if ok else ACCENT_PINK
+            total_lbl.config(
+                text=f"Total: {total}%  {'✓' if ok else f'({100-total:+d} to go)'}",
+                fg=color)
+            total_bar.delete("all")
+            w = total_bar.winfo_width() or 200
+            fill = int(w * min(total, 100) / 100)
+            total_bar.create_rectangle(0, 0, w, 14, fill=BG_CARD2, outline="")
+            total_bar.create_rectangle(0, 0, fill, 14,
+                                       fill=ACCENT_GREEN if ok else ACCENT_PINK,
+                                       outline="")
+            err_lbl.config(text="")
+
+        def render_rows():
+            for w in rows_frame.winfo_children():
+                w.destroy()
+            vars_.clear()
+            for cat, pct in targets.items():
+                v = tk.IntVar(value=pct)
+                vars_[cat] = v
+                v.trace_add("write", update_total)
+
+                row = Frame(rows_frame, bg=BG_CARD2,
+                            highlightbackground=ACCENT_TEAL, highlightthickness=1)
+                row.pack(fill="x", pady=3)
+
+                # Category name
+                Label(row, text=cat, font=("Courier New", 11, "bold"),
+                      bg=BG_CARD2, fg=TEXT_PRIMARY,
+                      width=16, anchor="w", padx=10).pack(side="left")
+
+                # Visual bar
+                bar = Canvas(row, height=14, bg="#1e1e2e",
+                             highlightthickness=0, width=160)
+                bar.pack(side="left", padx=8)
+
+                def draw_row_bar(event=None, b=bar, var=v):
+                    b.delete("all")
+                    w = b.winfo_width() or 160
+                    pct_val = max(0, min(var.get(), 100))
+                    b.create_rectangle(0, 0, w, 14, fill="#1e1e2e", outline="")
+                    b.create_rectangle(0, 0, int(w * pct_val / 100), 14,
+                                       fill=ACCENT_TEAL, outline="")
+                bar.bind("<Configure>", draw_row_bar)
+                v.trace_add("write", lambda *_, b=bar, var=v: draw_row_bar(b=b, var=var))
+
+                # [-] entry [+]
+                Button(row, text="−", font=("Courier New", 13, "bold"),
+                       bg=BG_CARD2, fg=ACCENT_TEAL, relief="flat", bd=0,
+                       activebackground=ACCENT_TEAL, activeforeground=BG_DARK,
+                       cursor="hand2", padx=6,
+                       command=lambda var=v: var.set(max(0, var.get() - 1))
+                       ).pack(side="left")
+
+                ef = Frame(row, bg=ACCENT_TEAL, padx=1, pady=1)
+                ef.pack(side="left", padx=2)
+                e = Entry(ef, font=("Courier New", 13, "bold"), width=4,
+                          bg=BG_CARD2, fg=ACCENT_TEAL,
+                          insertbackground=ACCENT_TEAL,
+                          relief="flat", bd=0, justify="center",
+                          textvariable=v)
+                e.pack(ipady=4, ipadx=4)
+
+                Button(row, text="+", font=("Courier New", 13, "bold"),
+                       bg=BG_CARD2, fg=ACCENT_TEAL, relief="flat", bd=0,
+                       activebackground=ACCENT_TEAL, activeforeground=BG_DARK,
+                       cursor="hand2", padx=6,
+                       command=lambda var=v: var.set(min(100, var.get() + 1))
+                       ).pack(side="left")
+
+                # % label
+                Label(row, text="%", font=("Courier New", 11),
+                      bg=BG_CARD2, fg=TEXT_DIM, padx=4).pack(side="left")
+
+                # Delete button
+                def make_del(c=cat):
+                    def del_cat():
+                        del targets[c]
+                        render_rows()
+                        update_total()
+                    return del_cat
+                Button(row, text="✕", font=("Courier New", 10),
+                       bg=BG_CARD2, fg=TEXT_DIM, relief="flat", bd=0,
+                       activebackground=ACCENT_PINK, activeforeground=BG_DARK,
+                       cursor="hand2", padx=10, pady=8,
+                       command=make_del()).pack(side="right")
+
+            update_total()
+
+        render_rows()
+
+        # ── Add new category ──
+        Canvas(win, height=1, bg=TEXT_DIM, highlightthickness=0,
+               bd=0).pack(fill="x", padx=30, pady=(8, 0))
+        add_row = Frame(win, bg=BG_DARK)
+        add_row.pack(pady=8)
+        nf = Frame(add_row, bg=ACCENT_TEAL, padx=1, pady=1)
+        nf.pack(side="left", padx=(0, 6))
+        new_e = Entry(nf, font=("Courier New", 12), width=16, bg=BG_CARD2,
+                      fg=ACCENT_TEAL, insertbackground=ACCENT_TEAL,
+                      relief="flat", bd=0)
+        new_e.insert(0, "Category name")
+        new_e.pack(ipady=5, ipadx=6)
+
+        def add_cat():
+            name = new_e.get().strip()
+            if not name or name in targets:
+                return
+            targets[name] = 0
+            render_rows()
+
+        self.small_btn(add_row, "+  ADD CATEGORY", add_cat, ACCENT_TEAL).pack(side="left")
+
+        # ── Save ──
+        def save_targets():
+            new_targets = {}
+            for cat, var in vars_.items():
+                pct = var.get()
+                if pct < 0:
+                    err_lbl.config(text=f"⚠  {cat} cannot be negative.")
+                    return
+                new_targets[cat] = pct
+            total = sum(new_targets.values())
+            if total != 100:
+                err_lbl.config(text=f"⚠  Total is {total}% — must equal exactly 100%.")
+                return
+            data["targets"] = new_targets
+            self._save_budget(data)
+            win.destroy()
+            on_save()
+
+        self.small_btn(win, "✓  SAVE TARGETS", save_targets,
+                       ACCENT_TEAL).pack(pady=(4, 20))
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width()  - win.winfo_width())  // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
 
 
 # ─── LAUNCH ───────────────────────────────────────────────────
